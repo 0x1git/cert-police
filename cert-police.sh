@@ -123,7 +123,7 @@ parse_results() {
     for host in "${unique_subdomains[@]}"; do
     	[[ ${silent} == true ]] && echo -e "$host" || echo -e "$host" | tlsx -silent -cn
     	echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file"
-    	[[ ${notify} == true ]] && echo -e "$host" | notify -silent >/dev/null 2>&1
+    	[[ ${notify} == true ]] && echo -e "$host" | notify -silent -pc notify-config.yaml >/dev/null 2>&1
     done
 
 }

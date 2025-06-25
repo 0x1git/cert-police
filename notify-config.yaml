@@ -1,0 +1,6 @@
+discord:
+  - id: "subs"
+    discord_channel: "subdomain-alert"
+    discord_username: "cert-police"
+    discord_format: "{{data}}"
+    discord_webhook_url: "https://discord.com/api/webhooks/XXXXXXXX"
