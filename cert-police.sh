@@ -131,7 +131,7 @@ parse_results() {
         fi
         echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file" 2>/dev/null
         if [[ ${notify} == true ]]; then
-            echo -e "$host" | notify -silent -pc notify-config.yaml >/dev/null 2>&1 || true
+            echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
         fi
     done
 
