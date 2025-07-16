@@ -7,6 +7,7 @@
 
 RED=`tput setaf 1`
 GREEN=`tput setaf 2`
+YELLOW=`tput setaf 3`
 MAGENTA=`tput setaf 5`
 BLUE=`tput setaf 4`
 NC=`tput sgr0`
@@ -95,6 +96,8 @@ trap cleanup SIGINT
 # Initialize variables
 silent=false
 notify=false
+domains=()  # Global array for target domains
+POSITIONAL_ARGS=()  # Array to store positional arguments
 
 # Python function to extract and parse subdomains
 parse_results() {
@@ -123,7 +126,7 @@ parse_results() {
     for host in "${unique_subdomains[@]}"; do
     	[[ ${silent} == true ]] && echo -e "$host" || echo -e "$host" | tlsx -silent -cn
     	echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file"
-    	[[ ${notify} == true ]] && echo -e "$host" | notify -silent -pc notify-config.yaml >/dev/null 2>&1
+    	[[ ${notify} == true ]] && echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1
     done
 
 }
@@ -131,15 +134,15 @@ parse_results() {
 # Start CertStream monitor and process JSON output with callback
 print_callback() {
     while IFS= read -r line; do
-        if [[ $line == *"message_type"*"\"heartbeat\""* ]]; then
+        # Skip empty lines
+        if [[ -z "$line" ]]; then
             continue
         fi
-
-        if [[ $line == *"message_type"*"\"certificate_update\""* ]]; then
-            all_domains=($(echo "$line" | jq -r '.data.leaf_cert.all_domains[]'))
-            if [[ ${#all_domains[@]} -eq 0 ]]; then
-                continue
-            else
+        
+        # Check if the line contains certificate data with sans field
+        if echo "$line" | jq -e '.sans.dns_names' >/dev/null 2>&1; then
+            all_domains=($(echo "$line" | jq -r '.sans.dns_names[]? // empty' 2>/dev/null))
+            if [[ ${#all_domains[@]} -gt 0 ]]; then
                 parse_results "${all_domains[@]}"
             fi
         fi
@@ -153,11 +156,11 @@ function initiate(){
 	output_file="found_subdomains.txt"
 	[[ ${silent} == false ]] && banner
 	# Read target domains from the file
-	[[ -f "$target" && -s "$target" ]] && declare -a domains=($(cat "$target")) || { echo -e ${MAGENTA}"Target file issue: File does not exist or is empty.${NC}"; exit 1; }
+	[[ -f "$target" && -s "$target" ]] && domains=($(cat "$target")) || { echo -e ${MAGENTA}"Target file issue: File does not exist or is empty.${NC}"; exit 1; }
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#domains[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled"
 	# Start CertStream monitor and process JSON output with callback
-	certstream --url "wss://certstream.calidog.io/" --full --json 2>/dev/null| print_callback
+	certstream --url "wss://ctlstream.interrupt.sh/stream" --full --json 2>/dev/null| print_callback
 }
 
 print_usage() {
