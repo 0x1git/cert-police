@@ -124,9 +124,15 @@ parse_results() {
 
     # checking if domain already exists in already seen file
     for host in "${unique_subdomains[@]}"; do
-    	[[ ${silent} == true ]] && echo -e "$host" || echo -e "$host" | tlsx -silent -cn
-    	echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file"
-    	[[ ${notify} == true ]] && echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1
+        if [[ ${silent} == true ]]; then
+            echo -e "$host"
+        else
+            echo -e "$host" | tlsx -silent -cn 2>/dev/null || echo -e "$host"
+        fi
+        echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file" 2>/dev/null
+        if [[ ${notify} == true ]]; then
+            echo -e "$host" | notify -silent -pc notify-config.yaml >/dev/null 2>&1 || true
+        fi
     done
 
 }
@@ -156,27 +162,35 @@ function initiate(){
 	output_file="found_subdomains.txt"
 	[[ ${silent} == false ]] && banner
 	# Read target domains from the file
-	[[ -f "$target" && -s "$target" ]] && domains=($(cat "$target")) || { echo -e ${MAGENTA}"Target file issue: File does not exist or is empty.${NC}"; exit 1; }
+	if [[ -f "$target" && -s "$target" ]]; then
+		domains=($(cat "$target"))
+	else
+		echo -e "${MAGENTA}Target file issue: File does not exist or is empty.${NC}"
+		exit 1
+	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#domains[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled"
 	# Start CertStream monitor and process JSON output with callback
-	certstream --url "wss://ctlstream.interrupt.sh/stream" --full --json 2>/dev/null| print_callback
+	echo -e "${BLUE}[INFO]${NC} Starting Certificate Transparency monitoring..."
+	certstream --url "wss://ctlstream.interrupt.sh/stream" --full --json 2>/dev/null | print_callback
 }
 
 print_usage() {
-	banner
-	echo $0 --silent --notify --target targets.txt
-	echo $0 -s -n -t targets.txt
-	echo $0 --add "STRING" --target  targets.txt
-	echo $0 -a "STRING" -t targets.txt
+	[[ ${silent} == false ]] && banner
+	echo "$0 --silent --notify --target targets.txt"
+	echo "$0 -s -n -t targets.txt"
+	echo "$0 --add \"STRING\" --target targets.txt"
+	echo "$0 -a \"STRING\" -t targets.txt"
 }
 
+
+target_file=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help)
       print_usage
-      exit
+      exit 0
       ;;
     -s|--silent)
       silent=true
@@ -187,22 +201,28 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -t|--target)
-      target="$2"
-      initiate
+      target_file="$2"
       shift 2
       ;;
     -*|--*)
       echo "Unknown option $1"
+      print_usage
       exit 1
       ;;
     *)
-      break # Exit the option processing loop
+      POSITIONAL_ARGS+=("$1")
+      shift
       ;;
   esac
 done
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 
-if [[ ! -n $1 ]]; then
+# Check if target file was provided and initiate monitoring
+if [[ -n "$target_file" ]]; then
+    target="$target_file"
+    initiate
+else
     print_usage
+    exit 1
 fi
