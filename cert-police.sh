@@ -96,17 +96,39 @@ trap cleanup SIGINT
 # Initialize variables
 silent=false
 notify=false
-domains=()  # Global array for target domains
+targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
 
-# Python function to extract and parse subdomains
+# Function to extract and parse subdomains with both domain and string matching
+# Supports two matching modes:
+# 1. Domain matching (strict) - for targets with dots (e.g., "principal.com")
+#    Only matches actual subdomains: "api.principal.com" ✅, "notprincipal.com" ❌
+# 2. String matching (flexible) - for targets without dots (e.g., "shopee", "garena")  
+#    Matches if string appears anywhere: "files.garena.vn" ✅, "supply.shopee.com.my" ✅
 parse_results() {
     all_domains_found=("$@")
     seen_domains=()
 
     for subdomain in "${all_domains_found[@]}"; do
-        for domain in "${domains[@]}"; do
-            if [[ $subdomain == *$domain* ]]; then
+        for target in "${targets[@]}"; do
+            matched=false
+            
+            # Determine if target is a domain (contains a dot) or a string keyword
+            if [[ $target == *.* ]]; then
+                # Domain matching (strict) - target contains dots, treat as domain
+                # Check if subdomain ends with the target domain (proper domain matching)
+                if [[ $subdomain == *".$target" ]] || [[ $subdomain == "$target" ]]; then
+                    matched=true
+                fi
+            else
+                # String matching (flexible) - target has no dots, treat as keyword
+                # Check if string appears anywhere in the subdomain
+                if [[ $subdomain == *$target* ]]; then
+                    matched=true
+                fi
+            fi
+            
+            if [[ $matched == true ]]; then
                 # removing wildcards
                 if [[ $subdomain == "*"* ]]; then
                     seen_domains+=("${subdomain:2}")
@@ -163,12 +185,12 @@ function initiate(){
 	[[ ${silent} == false ]] && banner
 	# Read target domains from the file
 	if [[ -f "$target" && -s "$target" ]]; then
-		domains=($(cat "$target"))
+		targets=($(cat "$target"))
 	else
 		echo -e "${MAGENTA}Target file issue: File does not exist or is empty.${NC}"
 		exit 1
 	fi
-	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#domains[@]}"
+	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled"
 	# Start CertStream monitor and process JSON output with callback
 	echo -e "${BLUE}[INFO]${NC} Starting Certificate Transparency monitoring..."
