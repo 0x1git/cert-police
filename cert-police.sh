@@ -151,7 +151,7 @@ parse_results() {
         else
             echo -e "$host" | tlsx -silent -cn 2>/dev/null || echo -e "$host"
         fi
-        echo -e "$(date +'%Y-%m-%d') $host" | anew -q "$output_file" 2>/dev/null
+        echo -e "$host" | anew -q "$output_file" 2>/dev/null
         if [[ ${notify} == true ]]; then
             echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
         fi
