@@ -13,9 +13,13 @@ BLUE=`tput setaf 4`
 NC=`tput sgr0`
 
 function cleanup() {
-  echo "Cleaning up before exit"
+  echo -e "\n${YELLOW}[INFO]${NC} Received interrupt signal. Cleaning up before exit..."
+  echo -e "${BLUE}[INFO]${NC} Total subdomains found saved to: $output_file"
   exit 0
 }
+
+# Enhanced signal handling
+trap cleanup SIGINT SIGTERM
 
 check_exist() {
     if command -v "$1" >/dev/null 2>&1; then
@@ -91,8 +95,6 @@ echo -e "Certificate Transparency Monitoring @_r12w4n"
 echo -e
 }
 
-trap cleanup SIGINT
-
 # Initialize variables
 silent=false
 notify=false
@@ -161,10 +163,19 @@ parse_results() {
 
 # Start CertStream monitor and process JSON output with callback
 print_callback() {
+    local line_count=0
+    
     while IFS= read -r line; do
         # Skip empty lines
         if [[ -z "$line" ]]; then
             continue
+        fi
+        
+        line_count=$((line_count + 1))
+        
+        # Show periodic status updates (every 1000 lines processed)
+        if [[ ${silent} == false && $((line_count % 1000)) -eq 0 ]]; then
+            echo -e "${GREEN}[STATUS]${NC} Processed $line_count certificate entries..."
         fi
         
         # Check if the line contains certificate data with sans field
@@ -175,6 +186,52 @@ print_callback() {
             fi
         fi
     done
+    
+    # If we exit the loop, it means the stream ended
+    if [[ ${silent} == false ]]; then
+        echo -e "${YELLOW}[WARNING]${NC} CertStream ended after processing $line_count entries"
+    fi
+}
+
+# Function to start CertStream with auto-reconnection
+start_certstream() {
+    local retry_count=0
+    local max_retries=999999  # Essentially unlimited retries
+    
+    while [[ $retry_count -lt $max_retries ]]; do
+        if [[ ${silent} == false ]]; then
+            echo -e "${BLUE}[INFO]${NC} Starting Certificate Transparency monitoring... (Attempt: $((retry_count + 1)))"
+        fi
+        
+        # Start certstream and handle connection
+        if timeout 300 certstream --url "wss://ctlstream.interrupt.sh/stream" --full --json 2>/dev/null | print_callback; then
+            if [[ ${silent} == false ]]; then
+                echo -e "${GREEN}[INFO]${NC} CertStream exited normally"
+            fi
+        else
+            local exit_code=$?
+            if [[ ${silent} == false ]]; then
+                if [[ $exit_code -eq 124 ]]; then
+                    echo -e "${YELLOW}[WARNING]${NC} CertStream connection timeout (no data received for 5 minutes)"
+                else
+                    echo -e "${YELLOW}[WARNING]${NC} CertStream connection lost or failed (exit code: $exit_code)"
+                fi
+            fi
+        fi
+        
+        # If we reach here, the connection was lost
+        retry_count=$((retry_count + 1))
+        
+        if [[ $retry_count -lt $max_retries ]]; then
+            if [[ ${silent} == false ]]; then
+                echo -e "${YELLOW}[INFO]${NC} Connection lost. Reconnecting in 10 seconds..."
+            fi
+            sleep 10
+        fi
+    done
+    
+    echo -e "${RED}[ERROR]${NC} Maximum retry attempts reached. Exiting."
+    exit 1
 }
 
 # Start CertStream monitor and process JSON output with callback
@@ -192,9 +249,9 @@ function initiate(){
 	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled"
-	# Start CertStream monitor and process JSON output with callback
-	echo -e "${BLUE}[INFO]${NC} Starting Certificate Transparency monitoring..."
-	certstream --url "wss://ctlstream.interrupt.sh/stream" --full --json 2>/dev/null | print_callback
+	
+	# Start CertStream with auto-reconnection
+	start_certstream
 }
 
 print_usage() {
