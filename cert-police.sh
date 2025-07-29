@@ -148,14 +148,19 @@ parse_results() {
 
     # checking if domain already exists in already seen file
     for host in "${unique_subdomains[@]}"; do
-        if [[ ${silent} == true ]]; then
-            echo -e "$host"
-        else
-            echo -e "$host" | tlsx -silent -cn 2>/dev/null || echo -e "$host"
-        fi
-        echo -e "$host" | anew -q "$output_file" 2>/dev/null
-        if [[ ${notify} == true ]]; then
-            echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+        # Check if this is a new subdomain using anew
+        if echo -e "$host" | anew -q "$output_file" 2>/dev/null; then
+            # This is a new subdomain, so display and notify
+            if [[ ${silent} == true ]]; then
+                echo -e "$host"
+            else
+                echo -e "$host" | tlsx -silent -cn 2>/dev/null || echo -e "$host"
+            fi
+            
+            # Only send notification for new subdomains
+            if [[ ${notify} == true ]]; then
+                echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+            fi
         fi
     done
 
