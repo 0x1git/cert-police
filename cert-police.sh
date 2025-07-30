@@ -139,7 +139,7 @@ scan_with_nuclei() {
     # Create a directory for nuclei results
     mkdir -p "nuclei_results"
     # Run nuclei with http templates and save results
-    nuclei -target "https://$domain" -t /root/nuclei-templates/http/ -es info -rl 5 -silent -o "nuclei_results/${domain}.txt" | notify -id reconftw 2>/dev/null
+    nuclei -target "https://$domain" -t /root/nuclei-templates/http/ -es info -rl 5 -silent -o "nuclei_results/${domain}.txt" | notify -id reconftw 2>/dev/null &
 }
 
 # Function to parse results from CertStream
