@@ -68,10 +68,14 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing tlsx ${NC}"
         go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: TLSx" >/dev/null
     fi
+    if ! check_exist nuclei; then
+        echo "${YELLOW}[*] Installing nuclei ${NC}"
+        go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Nuclei" >/dev/null
+    fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -103,6 +107,7 @@ echo -e
 # Initialize variables
 silent=false
 notify=false
+nuclei_scan=false
 targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
 
@@ -122,12 +127,36 @@ check_dns_resolution() {
     fi
 }
 
-# Function to extract and parse subdomains with both domain and string matching
-# Supports two matching modes:
-# 1. Domain matching (strict) - for targets with dots (e.g., "principal.com")
-#    Only matches actual subdomains: "api.principal.com" ✅, "notprincipal.com" ❌
-# 2. String matching (flexible) - for targets without dots (e.g., "shopee", "garena")  
-#    Matches if string appears anywhere: "files.garena.vn" ✅, "supply.shopee.com.my" ✅
+# Function to scan a domain with nuclei
+scan_with_nuclei() {
+    local domain="$1"
+    local nuclei_output="nuclei_results.txt"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[SCAN]${NC} Running Nuclei scan on $domain"
+    fi
+    
+    # Run nuclei with basic templates and save results
+    nuclei -u "https://$domain" -silent -o "$nuclei_output" -append 2>/dev/null
+    
+    # Check if nuclei found any issues for this specific domain
+    if grep -q "$domain" "$nuclei_output" 2>/dev/null; then
+        if [[ ${silent} == false ]]; then
+            echo -e "${RED}[VULN]${NC} Vulnerabilities found on $domain"
+        fi
+        
+        # Send notification for vulnerabilities if enabled
+        if [[ ${notify} == true ]]; then
+            echo -e "🚨 Vulnerabilities found on $domain" | notify -silent -id certpolice-vuln >/dev/null 2>&1 || true
+        fi
+    else
+        if [[ ${silent} == false ]]; then
+            echo -e "${GREEN}[SAFE]${NC} No vulnerabilities found on $domain"
+        fi
+    fi
+}
+
+# Function to parse results from CertStream
 parse_results() {
     all_domains_found=("$@")
     seen_domains=()
@@ -169,34 +198,72 @@ parse_results() {
 
     # checking if domain already exists in already seen file
     for host in "${unique_subdomains[@]}"; do
-        # Check if this is a new subdomain using anew against both files
-        is_new_unresolved=$(echo -e "$host" | anew -q "$output_file" 2>/dev/null && echo "new" || echo "duplicate")
-        is_new_resolved=$(echo -e "$host" | anew -q "$resolved_file" 2>/dev/null && echo "new" || echo "duplicate")
+        # Check if domain already exists in either file using grep
+        # Create files if they don't exist
+        [[ ! -f "$output_file" ]] && touch "$output_file"
+        [[ ! -f "$resolved_file" ]] && touch "$resolved_file"
         
-        # Only process if it's new in at least one file
-        if [[ "$is_new_unresolved" == "new" || "$is_new_resolved" == "new" ]]; then
-            # Check if domain resolves
+        # Check if domain exists in resolved file
+        if grep -Fxq "$host" "$resolved_file" 2>/dev/null; then
+            # Domain already exists in resolved file, skip processing
+            continue
+        fi
+        
+        # Check if domain exists in unresolved file  
+        if grep -Fxq "$host" "$output_file" 2>/dev/null; then
+            # Domain exists in unresolved file, check if it now resolves
             if check_dns_resolution "$host"; then
-                # Domain resolves - add to resolved file and notify
-                if echo -e "$host" | anew -q "$resolved_file" 2>/dev/null; then
-                    if [[ ${silent} == true ]]; then
-                        echo -e "[RESOLVED] $host"
-                    else
-                        echo -e "${GREEN}[RESOLVED]${NC} $host" | tlsx -silent -cn 2>/dev/null || echo -e "${GREEN}[RESOLVED]${NC} $host"
-                    fi
-                    
-                    # Send notification only for resolved domains
-                    if [[ ${notify} == true ]]; then
-                        echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
-                    fi
+                # Domain now resolves - move from unresolved to resolved
+                # Remove from unresolved file and add to resolved file
+                grep -Fv "$host" "$output_file" > "${output_file}.tmp" && mv "${output_file}.tmp" "$output_file"
+                echo "$host" >> "$resolved_file"
+                
+                if [[ ${silent} == true ]]; then
+                    echo -e "[RESOLVED] $host (moved from unresolved)"
+                else
+                    echo -e "${GREEN}[RESOLVED]${NC} $host (moved from unresolved)" | tlsx -silent -cn 2>/dev/null || echo -e "${GREEN}[RESOLVED]${NC} $host (moved from unresolved)"
                 fi
+                
+                # Send notification for newly resolved domain
+                if [[ ${notify} == true ]]; then
+                    echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+                fi
+                
+                # Run nuclei scan if enabled
+                if [[ ${nuclei_scan} == true ]]; then
+                    scan_with_nuclei "$host"
+                fi
+            fi
+            # If it still doesn't resolve, skip (already in unresolved file)
+            continue
+        fi
+        
+        # Domain is completely new - not in either file
+        if check_dns_resolution "$host"; then
+            # New domain that resolves - add to resolved file
+            echo "$host" >> "$resolved_file"
+            
+            if [[ ${silent} == true ]]; then
+                echo -e "[RESOLVED] $host"
             else
-                # Domain doesn't resolve - add to unresolved file
-                if echo -e "$host" | anew -q "$output_file" 2>/dev/null; then
-                    if [[ ${silent} == false ]]; then
-                        echo -e "${YELLOW}[UNRESOLVED]${NC} $host"
-                    fi
-                fi
+                echo -e "${GREEN}[RESOLVED]${NC} $host" | tlsx -silent -cn 2>/dev/null || echo -e "${GREEN}[RESOLVED]${NC} $host"
+            fi
+            
+            # Send notification only for resolved domains
+            if [[ ${notify} == true ]]; then
+                echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+            fi
+            
+            # Run nuclei scan if enabled
+            if [[ ${nuclei_scan} == true ]]; then
+                scan_with_nuclei "$host"
+            fi
+        else
+            # New domain that doesn't resolve - add to unresolved file
+            echo "$host" >> "$output_file"
+            
+            if [[ ${silent} == false ]]; then
+                echo -e "${YELLOW}[UNRESOLVED]${NC} $host"
             fi
         fi
     done
@@ -293,8 +360,10 @@ function initiate(){
 	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled (only for resolved domains)"
+	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
+	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results.txt"
 	
 	# Start CertStream with auto-reconnection
 	start_certstream
@@ -306,6 +375,8 @@ print_usage() {
 	echo "$0 -s -n -t targets.txt"
 	echo "$0 --add \"STRING\" --target targets.txt"
 	echo "$0 -a \"STRING\" -t targets.txt"
+	echo "$0 --nuclei -t targets.txt (enable nuclei scanning)"
+	echo "$0 -u -t targets.txt (enable nuclei scanning)"
 }
 
 
@@ -323,6 +394,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--notify)
       notify=true
+      shift
+      ;;
+    -u|--nuclei)
+      nuclei_scan=true
       shift
       ;;
     -t|--target)
