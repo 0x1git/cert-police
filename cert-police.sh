@@ -349,7 +349,7 @@ function initiate(){
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
-	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results.txt"
+	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results/ directory"
 	
 	# Start CertStream with auto-reconnection
 	start_certstream
