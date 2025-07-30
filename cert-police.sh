@@ -14,7 +14,12 @@ NC=`tput sgr0`
 
 function cleanup() {
   echo -e "\n${YELLOW}[INFO]${NC} Received interrupt signal. Cleaning up before exit..."
-  echo -e "${BLUE}[INFO]${NC} Total subdomains found saved to: $output_file"
+  if [[ -n "$output_file" ]]; then
+    echo -e "${BLUE}[INFO]${NC} Unresolved subdomains saved to: $output_file"
+  fi
+  if [[ -n "$resolved_file" ]]; then
+    echo -e "${BLUE}[INFO]${NC} Resolved subdomains saved to: $resolved_file"
+  fi
   exit 0
 }
 
@@ -51,22 +56,26 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing jq ${NC}"
         apt install jq -y 2>/dev/null | pv -p -t -e -N "Installing Tool: jq" >/dev/null
     fi
+    if ! check_exist dig; then
+        echo "${YELLOW}[*] Installing dnsutils ${NC}"
+        apt install dnsutils -y 2>/dev/null | pv -p -t -e -N "Installing Tool: dnsutils" >/dev/null
+    fi
     if ! check_exist certstream; then
         echo "${YELLOW}[*] Installing certstream ${NC}"
 	pip install certstream --break-system-packages 2>/dev/null | pv -p -t -e -N "Installing Tool: certstream" >/dev/null
     fi
     if ! check_exist notify; then
-        echo "${YELLOW}[*] Installing jq ${NC}"
+        echo "${YELLOW}[*] Installing notify ${NC}"
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Notify" >/dev/null
     fi
     if ! check_exist tlsx; then
-        echo "${YELLOW}[*] Installing jq ${NC}"
+        echo "${YELLOW}[*] Installing tlsx ${NC}"
         go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: TLSx" >/dev/null
     fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "certstream" "notify" "tlsx")
+required_tools=("pv" "anew" "python3" "pip" "jq" "dig" "certstream" "notify" "tlsx")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -100,6 +109,47 @@ silent=false
 notify=false
 targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
+
+# Function to check if a domain resolves
+check_dns_resolution() {
+    local domain="$1"
+    
+    # Skip wildcard domains and obviously invalid formats
+    if [[ "$domain" == *"*"* ]] || [[ "$domain" == "" ]] || [[ ${#domain} -gt 253 ]]; then
+        return 1
+    fi
+    
+    # Use dig with timeout to check if domain actually resolves
+    # Check for both A and AAAA records, and verify we get actual IP addresses
+    local result
+    result=$(timeout 5 dig +short +time=2 +tries=1 "@8.8.8.8" "$domain" A "$domain" AAAA 2>/dev/null)
+    
+    # Check if we got any actual IP addresses (IPv4 or IPv6)
+    # Also filter out common DNS provider responses that aren't real IPs
+    if [[ -n "$result" ]]; then
+        # Check for valid IPv4 or IPv6 addresses, excluding common parking/error pages
+        local valid_ip_found=false
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                # Valid IPv4 - check it's not a common parking IP
+                if [[ "$line" != "127.0.0.1" ]] && [[ "$line" != "0.0.0.0" ]]; then
+                    valid_ip_found=true
+                    break
+                fi
+            elif [[ "$line" =~ ^[0-9a-fA-F:]+$ ]] && [[ ${#line} -gt 2 ]]; then
+                # Valid IPv6
+                valid_ip_found=true
+                break
+            fi
+        done <<< "$result"
+        
+        if [[ "$valid_ip_found" == true ]]; then
+            return 0  # Domain resolves to actual IP
+        fi
+    fi
+    
+    return 1  # Domain doesn't resolve or no valid IP returned
+}
 
 # Function to extract and parse subdomains with both domain and string matching
 # Supports two matching modes:
@@ -148,18 +198,34 @@ parse_results() {
 
     # checking if domain already exists in already seen file
     for host in "${unique_subdomains[@]}"; do
-        # Check if this is a new subdomain using anew
-        if echo -e "$host" | anew -q "$output_file" 2>/dev/null; then
-            # This is a new subdomain, so display and notify
-            if [[ ${silent} == true ]]; then
-                echo -e "$host"
+        # Check if this is a new subdomain using anew against both files
+        is_new_unresolved=$(echo -e "$host" | anew -q "$output_file" 2>/dev/null && echo "new" || echo "duplicate")
+        is_new_resolved=$(echo -e "$host" | anew -q "$resolved_file" 2>/dev/null && echo "new" || echo "duplicate")
+        
+        # Only process if it's new in at least one file
+        if [[ "$is_new_unresolved" == "new" || "$is_new_resolved" == "new" ]]; then
+            # Check if domain resolves
+            if check_dns_resolution "$host"; then
+                # Domain resolves - add to resolved file and notify
+                if echo -e "$host" | anew -q "$resolved_file" 2>/dev/null; then
+                    if [[ ${silent} == true ]]; then
+                        echo -e "[RESOLVED] $host"
+                    else
+                        echo -e "${GREEN}[RESOLVED]${NC} $host" | tlsx -silent -cn 2>/dev/null || echo -e "${GREEN}[RESOLVED]${NC} $host"
+                    fi
+                    
+                    # Send notification only for resolved domains
+                    if [[ ${notify} == true ]]; then
+                        echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+                    fi
+                fi
             else
-                echo -e "$host" | tlsx -silent -cn 2>/dev/null || echo -e "$host"
-            fi
-            
-            # Only send notification for new subdomains
-            if [[ ${notify} == true ]]; then
-                echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+                # Domain doesn't resolve - add to unresolved file
+                if echo -e "$host" | anew -q "$output_file" 2>/dev/null; then
+                    if [[ ${silent} == false ]]; then
+                        echo -e "${YELLOW}[UNRESOLVED]${NC} $host"
+                    fi
+                fi
             fi
         fi
     done
@@ -242,8 +308,10 @@ start_certstream() {
 # Start CertStream monitor and process JSON output with callback
 
 function initiate(){
-	# Output file for saving subdomains
-	output_file="found_subdomains.txt"
+	# Output files for saving subdomains
+	output_file="found_subdomains.txt"        # For unresolved domains
+	resolved_file="resolved_subdomains.txt"   # For resolved domains
+	
 	[[ ${silent} == false ]] && banner
 	# Read target domains from the file
 	if [[ -f "$target" && -s "$target" ]]; then
@@ -253,7 +321,9 @@ function initiate(){
 		exit 1
 	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
-	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled"
+	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled (only for resolved domains)"
+	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
+	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
 	
 	# Start CertStream with auto-reconnection
 	start_certstream
