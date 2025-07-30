@@ -136,24 +136,10 @@ scan_with_nuclei() {
         echo -e "${BLUE}[SCAN]${NC} Running Nuclei scan on $domain"
     fi
     
-    # Run nuclei with basic templates and save results
-    nuclei -u "https://$domain" -silent -o "$nuclei_output" -append 2>/dev/null
-    
-    # Check if nuclei found any issues for this specific domain
-    if grep -q "$domain" "$nuclei_output" 2>/dev/null; then
-        if [[ ${silent} == false ]]; then
-            echo -e "${RED}[VULN]${NC} Vulnerabilities found on $domain"
-        fi
-        
-        # Send notification for vulnerabilities if enabled
-        if [[ ${notify} == true ]]; then
-            echo -e "🚨 Vulnerabilities found on $domain" | notify -silent -id certpolice-vuln >/dev/null 2>&1 || true
-        fi
-    else
-        if [[ ${silent} == false ]]; then
-            echo -e "${GREEN}[SAFE]${NC} No vulnerabilities found on $domain"
-        fi
-    fi
+    # Create a directory for nuclei results
+    mkdir -p "nuclei_results"
+    # Run nuclei with http templates and save results
+    nuclei -target "https://$domain" -t /root/nuclei-templates/http/ -es info -silent -o "nuclei_results/${domain}.txt" | notify -id reconftw 2>/dev/null
 }
 
 # Function to parse results from CertStream
