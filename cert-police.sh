@@ -14,12 +14,8 @@ NC=`tput sgr0`
 
 function cleanup() {
   echo -e "\n${YELLOW}[INFO]${NC} Received interrupt signal. Cleaning up before exit..."
-  if [[ -n "$output_file" ]]; then
-    echo -e "${BLUE}[INFO]${NC} Unresolved subdomains saved to: $output_file"
-  fi
-  if [[ -n "$resolved_file" ]]; then
-    echo -e "${BLUE}[INFO]${NC} Resolved subdomains saved to: $resolved_file"
-  fi
+  echo -e "${BLUE}[INFO]${NC} Unresolved subdomains saved to: $output_file"
+  echo -e "${BLUE}[INFO]${NC} Resolved subdomains saved to: $resolved_file"
   exit 0
 }
 
@@ -56,7 +52,7 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing jq ${NC}"
         apt install jq -y 2>/dev/null | pv -p -t -e -N "Installing Tool: jq" >/dev/null
     fi
-    if ! check_exist dig; then
+    if ! check_exist nslookup; then
         echo "${YELLOW}[*] Installing dnsutils ${NC}"
         apt install dnsutils -y 2>/dev/null | pv -p -t -e -N "Installing Tool: dnsutils" >/dev/null
     fi
@@ -75,7 +71,7 @@ dependency_installer(){
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "dig" "certstream" "notify" "tlsx")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -114,41 +110,16 @@ POSITIONAL_ARGS=()  # Array to store positional arguments
 check_dns_resolution() {
     local domain="$1"
     
-    # Skip wildcard domains and obviously invalid formats
-    if [[ "$domain" == *"*"* ]] || [[ "$domain" == "" ]] || [[ ${#domain} -gt 253 ]]; then
-        return 1
-    fi
+    # Use dig for reliable DNS resolution checking
+    # If domain resolves, dig will output IP addresses; if not, no output
+    local result=$(dig +short "$domain" 2>/dev/null)
     
-    # Use dig with timeout to check if domain actually resolves
-    # Check for both A and AAAA records, and verify we get actual IP addresses
-    local result
-    result=$(timeout 5 dig +short +time=2 +tries=1 "@8.8.8.8" "$domain" A "$domain" AAAA 2>/dev/null)
-    
-    # Check if we got any actual IP addresses (IPv4 or IPv6)
-    # Also filter out common DNS provider responses that aren't real IPs
+    # Check if we got any output (domain resolves)
     if [[ -n "$result" ]]; then
-        # Check for valid IPv4 or IPv6 addresses, excluding common parking/error pages
-        local valid_ip_found=false
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                # Valid IPv4 - check it's not a common parking IP
-                if [[ "$line" != "127.0.0.1" ]] && [[ "$line" != "0.0.0.0" ]]; then
-                    valid_ip_found=true
-                    break
-                fi
-            elif [[ "$line" =~ ^[0-9a-fA-F:]+$ ]] && [[ ${#line} -gt 2 ]]; then
-                # Valid IPv6
-                valid_ip_found=true
-                break
-            fi
-        done <<< "$result"
-        
-        if [[ "$valid_ip_found" == true ]]; then
-            return 0  # Domain resolves to actual IP
-        fi
+        return 0  # Domain resolves
+    else
+        return 1  # Domain doesn't resolve
     fi
-    
-    return 1  # Domain doesn't resolve or no valid IP returned
 }
 
 # Function to extract and parse subdomains with both domain and string matching
