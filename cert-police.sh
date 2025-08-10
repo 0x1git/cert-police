@@ -72,10 +72,18 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing nuclei ${NC}"
         go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Nuclei" >/dev/null
     fi
+    if ! check_exist naabu; then
+        echo "${YELLOW}[*] Installing naabu ${NC}"
+        go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Naabu" >/dev/null
+    fi
+    if ! check_exist arjun; then
+        echo "${YELLOW}[*] Installing arjun ${NC}"
+        pipx install arjun --break-system-packages 2>/dev/null | pv -p -t -e -N "Installing Tool: Arjun" >/dev/null
+    fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -108,6 +116,8 @@ echo -e
 silent=false
 notify=false
 nuclei_scan=false
+naabu_scan=false
+arjun_scan=false
 targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
 
@@ -124,6 +134,45 @@ check_dns_resolution() {
         return 0  # Domain resolves
     else
         return 1  # Domain doesn't resolve
+    fi
+}
+
+# Function to scan ports with naabu
+scan_with_naabu() {
+    local domain="$1"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[PORT-SCAN]${NC} Running Naabu port scan on $domain"
+    fi
+    
+    # Create a directory for naabu results
+    mkdir -p "naabu_results"
+    
+    # Run naabu with common ports and save results
+    naabu -host "$domain" -tp full -silent -o "naabu_results/${domain}.txt" | notify -id reconftw -bulk 2>/dev/null &
+}
+
+# Function to scan for parameters with arjun
+scan_with_arjun() {
+    local domain="$1"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[PARAM-SCAN]${NC} Running Arjun parameter discovery on $domain"
+    fi
+    
+    # Create a directory for arjun results
+    mkdir -p "arjun_results"
+    
+    # Run arjun with specified options and save results
+    arjun -u "https://$domain" -t 100 -oT "arjun_results/${domain}.txt" 2>/dev/null &
+    
+    
+    # Check if any parameters were found
+    if [[ -s "arjun_results/${domain}.txt" ]]; then
+        if [[ ${silent} == false ]]; then
+            local param_count=$(wc -l < "arjun_results/${domain}.txt")
+            echo -e "${GREEN}[PARAMS]${NC} Found $param_count parameters on $domain" | notify -silent -id reconftw >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -215,6 +264,16 @@ parse_results() {
                     echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
                 fi
                 
+                # Run naabu port scan if enabled
+                if [[ ${naabu_scan} == true ]]; then
+                    scan_with_naabu "$host"
+                fi
+                
+                # Run arjun parameter scan if enabled
+                if [[ ${arjun_scan} == true ]]; then
+                    scan_with_arjun "$host"
+                fi
+                
                 # Run nuclei scan if enabled
                 if [[ ${nuclei_scan} == true ]]; then
                     scan_with_nuclei "$host"
@@ -238,6 +297,16 @@ parse_results() {
             # Send notification only for resolved domains
             if [[ ${notify} == true ]]; then
                 echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
+            fi
+            
+            # Run naabu port scan if enabled
+            if [[ ${naabu_scan} == true ]]; then
+                scan_with_naabu "$host"
+            fi
+            
+            # Run arjun parameter scan if enabled
+            if [[ ${arjun_scan} == true ]]; then
+                scan_with_arjun "$host"
             fi
             
             # Run nuclei scan if enabled
@@ -346,9 +415,13 @@ function initiate(){
 	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled (only for resolved domains)"
+	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu port scanning is enabled for resolved domains"
+	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun parameter discovery is enabled for resolved domains"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
+	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu results: naabu_results/ directory"
+	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun results: arjun_results/ directory"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results/ directory"
 	
 	# Start CertStream with auto-reconnection
@@ -361,8 +434,13 @@ print_usage() {
 	echo "$0 -s -n -t targets.txt"
 	echo "$0 --add \"STRING\" --target targets.txt"
 	echo "$0 -a \"STRING\" -t targets.txt"
+	echo "$0 --naabu -t targets.txt (enable naabu port scanning)"
+	echo "$0 -p -t targets.txt (enable naabu port scanning)"
+	echo "$0 --arjun -t targets.txt (enable arjun parameter discovery)"
+	echo "$0 -r -t targets.txt (enable arjun parameter discovery)"
 	echo "$0 --nuclei -t targets.txt (enable nuclei scanning)"
 	echo "$0 -u -t targets.txt (enable nuclei scanning)"
+	echo "$0 -p -r -u -t targets.txt (enable all: naabu, arjun, and nuclei)"
 }
 
 
@@ -380,6 +458,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--notify)
       notify=true
+      shift
+      ;;
+    -p|--naabu)
+      naabu_scan=true
+      shift
+      ;;
+    -r|--arjun)
+      arjun_scan=true
       shift
       ;;
     -u|--nuclei)
