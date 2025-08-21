@@ -80,10 +80,14 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing arjun ${NC}"
         pipx install arjun --break-system-packages 2>/dev/null | pv -p -t -e -N "Installing Tool: Arjun" >/dev/null
     fi
+    if ! check_exist httpx; then
+        echo "${YELLOW}[*] Installing httpx ${NC}"
+        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Httpx" >/dev/null
+    fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun" "httpx")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -135,6 +139,18 @@ check_dns_resolution() {
     else
         return 1  # Domain doesn't resolve
     fi
+}
+
+# Function to scan domain with httpx and get web info
+scan_with_httpx() {
+    local domain="$1"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[HTTP-SCAN]${NC} Running Httpx scan on $domain"
+    fi
+    
+    # Run httpx with specified options and pipe output through notify
+    httpx -u "$domain" -sc -server -td -fr -silent -title | notify -silent -id reconftw >/dev/null 2>&1 || true
 }
 
 # Function to scan ports with naabu
@@ -264,6 +280,9 @@ parse_results() {
                     echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
                 fi
                 
+                # Run httpx scan first
+                scan_with_httpx "$host"
+                
                 # Run naabu port scan if enabled
                 if [[ ${naabu_scan} == true ]]; then
                     scan_with_naabu "$host"
@@ -298,6 +317,9 @@ parse_results() {
             if [[ ${notify} == true ]]; then
                 echo -e "$host" | notify -silent -id certpolice >/dev/null 2>&1 || true
             fi
+            
+            # Run httpx scan first
+            scan_with_httpx "$host"
             
             # Run naabu port scan if enabled
             if [[ ${naabu_scan} == true ]]; then
@@ -415,6 +437,7 @@ function initiate(){
 	fi
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} No. of domains/Keywords to monitor ${#targets[@]}"
 	[[ ${silent} == false && "$notify" == true ]] && echo -e "${BLUE}[INFO]${NC} Notify is enabled (only for resolved domains)"
+	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Httpx web scanning is enabled for all resolved domains"
 	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu port scanning is enabled for resolved domains"
 	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun parameter discovery is enabled for resolved domains"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
@@ -430,17 +453,58 @@ function initiate(){
 
 print_usage() {
 	[[ ${silent} == false ]] && banner
-	echo "$0 --silent --notify --target targets.txt"
-	echo "$0 -s -n -t targets.txt"
-	echo "$0 --add \"STRING\" --target targets.txt"
-	echo "$0 -a \"STRING\" -t targets.txt"
-	echo "$0 --naabu -t targets.txt (enable naabu port scanning)"
-	echo "$0 -p -t targets.txt (enable naabu port scanning)"
-	echo "$0 --arjun -t targets.txt (enable arjun parameter discovery)"
-	echo "$0 -r -t targets.txt (enable arjun parameter discovery)"
-	echo "$0 --nuclei -t targets.txt (enable nuclei scanning)"
-	echo "$0 -u -t targets.txt (enable nuclei scanning)"
-	echo "$0 -p -r -u -t targets.txt (enable all: naabu, arjun, and nuclei)"
+	
+	echo -e "${GREEN}USAGE:${NC}"
+	echo -e "  $0 [OPTIONS] -t targets.txt"
+	echo
+	
+	echo -e "${GREEN}REQUIRED:${NC}"
+	echo -e "  -t, --target FILE     Target domains/keywords file"
+	echo
+	
+	echo -e "${GREEN}BASIC OPTIONS:${NC}"
+	echo -e "  -s, --silent          Run in silent mode (minimal output)"
+	echo -e "  -n, --notify          Enable notifications for new domains"
+	echo -e "  -h, --help            Show this help message"
+	echo
+	
+	echo -e "${GREEN}SECURITY SCANNING:${NC}"
+	echo -e "  -p, --naabu           Enable port scanning with naabu"
+	echo -e "  -r, --arjun           Enable parameter discovery with arjun"
+	echo -e "  -u, --nuclei          Enable vulnerability scanning with nuclei"
+	echo
+	
+	echo -e "${GREEN}COMMON EXAMPLES:${NC}"
+	echo -e "  ${BLUE}# Basic monitoring${NC}"
+	echo -e "  $0 -t targets.txt"
+	echo
+	echo -e "  ${BLUE}# With notifications${NC}"
+	echo -e "  $0 -n -t targets.txt"
+	echo
+	echo -e "  ${BLUE}# Silent mode with notifications${NC}"
+	echo -e "  $0 -s -n -t targets.txt"
+	echo
+	echo -e "  ${BLUE}# Full security scanning${NC}"
+	echo -e "  $0 -p -r -u -t targets.txt"
+	echo
+	echo -e "  ${BLUE}# Everything enabled${NC}"
+	echo -e "  $0 -s -n -p -r -u -t targets.txt"
+	echo
+	
+	echo -e "${GREEN}SCANNING WORKFLOW:${NC}"
+	echo -e "  1. ${YELLOW}Httpx${NC} - Web scanning (always enabled)"
+	echo -e "  2. ${YELLOW}Naabu${NC} - Port scanning (-p flag)"
+	echo -e "  3. ${YELLOW}Arjun${NC} - Parameter discovery (-r flag)"
+	echo -e "  4. ${YELLOW}Nuclei${NC} - Vulnerability scanning (-u flag)"
+	echo
+	
+	echo -e "${GREEN}OUTPUT FILES:${NC}"
+	echo -e "  found_subdomains.txt     - Unresolved domains"
+	echo -e "  resolved_subdomains.txt  - Active/resolved domains"
+	echo -e "  naabu_results/           - Port scan results"
+	echo -e "  arjun_results/           - Parameter discovery results"
+	echo -e "  nuclei_results/          - Vulnerability scan results"
+	echo
 }
 
 
