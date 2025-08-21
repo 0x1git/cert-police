@@ -84,10 +84,14 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing httpx ${NC}"
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Httpx" >/dev/null
     fi
+    if ! check_exist ffuf; then
+        echo "${YELLOW}[*] Installing ffuf ${NC}"
+        go install github.com/ffuf/ffuf@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Ffuf" >/dev/null
+    fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun" "httpx")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun" "httpx" "ffuf")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -122,6 +126,7 @@ notify=false
 nuclei_scan=false
 naabu_scan=false
 arjun_scan=false
+ffuf_scan=false
 targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
 
@@ -165,7 +170,7 @@ scan_with_naabu() {
     mkdir -p "naabu_results"
     
     # Run naabu with common ports and save results
-    naabu -host "$domain" -tp full -silent -o "naabu_results/${domain}.txt" | notify -id reconftw -bulk 2>/dev/null &
+    naabu -host "$domain" -tp 1000 -silent -verify -c 50 -cdn -ec -nmap-cli "nmap -sV" -rate 2000 -o "naabu_results/${domain}.txt" | notify -silent -id reconftw -bulk 2>/dev/null &
 }
 
 # Function to scan for parameters with arjun
@@ -190,6 +195,30 @@ scan_with_arjun() {
             echo -e "${GREEN}[PARAMS]${NC} Found $param_count parameters on $domain" | notify -silent -id reconftw >/dev/null 2>&1 || true
         fi
     fi
+}
+
+# Function to scan for directories/files with ffuf
+scan_with_ffuf() {
+    local domain="$1"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[DIR-SCAN]${NC} Running Ffuf directory scan on $domain"
+    fi
+    
+    # Create a directory for ffuf results
+    mkdir -p "ffuf_results"
+    
+    # Check if easy_wins.txt wordlist exists
+    local wordlist="easy_wins.txt"
+    if [[ ! -f "$wordlist" ]]; then
+        echo -e "${RED}[ERROR]${NC} Wordlist file '$wordlist' not found!"
+        echo -e "${YELLOW}[INFO]${NC} Please create the '$wordlist' file with your desired wordlist entries."
+        echo -e "${YELLOW}[INFO]${NC} Skipping ffuf scan for $domain"
+        return 1
+    fi
+    
+    # Run ffuf with specified options and save results
+    ffuf -w "$wordlist" -v -u "https://$domain/FUZZ" -o "ffuf_results/${domain}.txt" -mc 200 -rate 40 -silent | notify -silent -id reconftw -bulk 2>/dev/null &
 }
 
 # Function to scan a domain with nuclei
@@ -293,6 +322,11 @@ parse_results() {
                     scan_with_arjun "$host"
                 fi
                 
+                # Run ffuf directory scan if enabled
+                if [[ ${ffuf_scan} == true ]]; then
+                    scan_with_ffuf "$host"
+                fi
+                
                 # Run nuclei scan if enabled
                 if [[ ${nuclei_scan} == true ]]; then
                     scan_with_nuclei "$host"
@@ -329,6 +363,11 @@ parse_results() {
             # Run arjun parameter scan if enabled
             if [[ ${arjun_scan} == true ]]; then
                 scan_with_arjun "$host"
+            fi
+            
+            # Run ffuf directory scan if enabled
+            if [[ ${ffuf_scan} == true ]]; then
+                scan_with_ffuf "$host"
             fi
             
             # Run nuclei scan if enabled
@@ -440,11 +479,13 @@ function initiate(){
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Httpx web scanning is enabled for all resolved domains"
 	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu port scanning is enabled for resolved domains"
 	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun parameter discovery is enabled for resolved domains"
+	[[ ${silent} == false && "$ffuf_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Ffuf directory scanning is enabled for resolved domains"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
 	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu results: naabu_results/ directory"
 	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun results: arjun_results/ directory"
+	[[ ${silent} == false && "$ffuf_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Ffuf results: ffuf_results/ directory"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results/ directory"
 	
 	# Start CertStream with auto-reconnection
@@ -471,6 +512,7 @@ print_usage() {
 	echo -e "${GREEN}SECURITY SCANNING:${NC}"
 	echo -e "  -p, --naabu           Enable port scanning with naabu"
 	echo -e "  -r, --arjun           Enable parameter discovery with arjun"
+	echo -e "  -f, --ffuf            Enable directory/file scanning with ffuf"
 	echo -e "  -u, --nuclei          Enable vulnerability scanning with nuclei"
 	echo
 	
@@ -485,17 +527,18 @@ print_usage() {
 	echo -e "  $0 -s -n -t targets.txt"
 	echo
 	echo -e "  ${BLUE}# Full security scanning${NC}"
-	echo -e "  $0 -p -r -u -t targets.txt"
+	echo -e "  $0 -p -r -f -u -t targets.txt"
 	echo
 	echo -e "  ${BLUE}# Everything enabled${NC}"
-	echo -e "  $0 -s -n -p -r -u -t targets.txt"
+	echo -e "  $0 -s -n -p -r -f -u -t targets.txt"
 	echo
 	
 	echo -e "${GREEN}SCANNING WORKFLOW:${NC}"
 	echo -e "  1. ${YELLOW}Httpx${NC} - Web scanning (always enabled)"
 	echo -e "  2. ${YELLOW}Naabu${NC} - Port scanning (-p flag)"
 	echo -e "  3. ${YELLOW}Arjun${NC} - Parameter discovery (-r flag)"
-	echo -e "  4. ${YELLOW}Nuclei${NC} - Vulnerability scanning (-u flag)"
+	echo -e "  4. ${YELLOW}Ffuf${NC} - Directory/file scanning (-f flag)"
+	echo -e "  5. ${YELLOW}Nuclei${NC} - Vulnerability scanning (-u flag)"
 	echo
 	
 	echo -e "${GREEN}OUTPUT FILES:${NC}"
@@ -503,6 +546,7 @@ print_usage() {
 	echo -e "  resolved_subdomains.txt  - Active/resolved domains"
 	echo -e "  naabu_results/           - Port scan results"
 	echo -e "  arjun_results/           - Parameter discovery results"
+	echo -e "  ffuf_results/            - Directory/file scan results"
 	echo -e "  nuclei_results/          - Vulnerability scan results"
 	echo
 }
@@ -530,6 +574,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -r|--arjun)
       arjun_scan=true
+      shift
+      ;;
+    -f|--ffuf)
+      ffuf_scan=true
       shift
       ;;
     -u|--nuclei)
