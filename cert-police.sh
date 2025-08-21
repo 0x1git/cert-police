@@ -218,7 +218,7 @@ scan_with_ffuf() {
     fi
     
     # Run ffuf with specified options and save results
-    ffuf -w "$wordlist" -v -u "https://$domain/FUZZ" -o "ffuf_results/${domain}.txt" -mc 200 -rate 40 -silent | notify -silent -id reconftw -bulk 2>/dev/null &
+    ffuf -w "$wordlist" -v -u "https://$domain/FUZZ" -o "ffuf_results/${domain}.txt" -mc 200 -rate 40 -s | notify -silent -id reconftw -bulk 2>/dev/null &
 }
 
 # Function to scan a domain with nuclei
