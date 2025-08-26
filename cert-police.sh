@@ -88,10 +88,18 @@ dependency_installer(){
         echo "${YELLOW}[*] Installing dirsearch ${NC}"
         pip install dirsearch --break-system-packages 2>/dev/null | pv -p -t -e -N "Installing Tool: Dirsearch" >/dev/null
     fi
+    if ! check_exist gau; then
+        echo "${YELLOW}[*] Installing gau ${NC}"
+        go install github.com/lc/gau/v2/cmd/gau@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Gau" >/dev/null
+    fi
+    if ! check_exist katana; then
+        echo "${YELLOW}[*] Installing katana ${NC}"
+        go install github.com/projectdiscovery/katana/cmd/katana@latest 2>/dev/null | pv -p -t -e -N "Installing Tool: Katana" >/dev/null
+    fi
 
 }
 
-required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun" "httpx" "dirsearch")
+required_tools=("pv" "anew" "python3" "pip" "jq" "nslookup" "certstream" "notify" "tlsx" "nuclei" "naabu" "arjun" "httpx" "dirsearch" "gau" "katana")
 
 missing_tools=()
 for tool in "${required_tools[@]}"; do
@@ -127,6 +135,7 @@ nuclei_scan=false
 naabu_scan=false
 arjun_scan=false
 dirsearch_scan=false
+url_exposure_scan=false
 targets=()  # Global array for target domains and keywords
 POSITIONAL_ARGS=()  # Array to store positional arguments
 
@@ -233,7 +242,45 @@ scan_with_nuclei() {
     # Create a directory for nuclei results
     mkdir -p "nuclei_results"
     # Run nuclei with http templates and save results
-    nuclei -target "https://$domain" -t /root/nuclei-templates/http/ -es info -rl 5 -silent -o "nuclei_results/${domain}.txt" | notify -id reconftw 2>/dev/null &
+    nuclei -target "https://$domain" -t /root/nuclei-templates/http/ -es info -rl 10 -et /root/nuclei-templates/http/exposures/ -silent -o "nuclei_results/${domain}.txt" | notify -id reconftw 2>/dev/null &
+}
+
+# Function to perform URL discovery and exposure scanning
+scan_with_url_exposure() {
+    local domain="$1"
+    
+    if [[ ${silent} == false ]]; then
+        echo -e "${BLUE}[URL-EXPOSURE]${NC} Starting URL discovery and exposure scanning on $domain"
+    fi
+    
+    # Create directories for results
+    mkdir -p "gau_results"
+    mkdir -p "katana_results"
+    
+    # Create a background process that handles the entire workflow
+    (
+        # Run gau for URL discovery
+        gau "$domain" --blacklist png,jpg,gif,ico,svg --o "gau_results/${domain}-urls.txt" --fc 404 2>/dev/null &
+        gau_pid=$!
+        
+        # Run katana URL crawling
+        katana -u "$domain" -jc -silent -o "katana_results/${domain}-urls.txt" 2>/dev/null &
+        katana_pid=$!
+        
+        # Wait for both gau and katana to complete
+        wait $gau_pid
+        wait $katana_pid
+        
+        # Combine results and create unique list
+        if [[ -f "katana_results/${domain}-urls.txt" || -f "gau_results/${domain}-urls.txt" ]]; then
+            cat "katana_results/${domain}-urls.txt" "gau_results/${domain}-urls.txt" 2>/dev/null | anew -q "all-expo-${domain}.txt"
+            
+            # Run nuclei exposure scan if URLs were found
+            if [[ -s "all-expo-${domain}.txt" ]]; then
+                nuclei -l "all-expo-${domain}.txt" -t /root/nuclei-templates/http/exposures/ -es info -rl 10 -silent -o "nuclei_results/expo-${domain}.txt" | notify -id reconftw 2>/dev/null &
+            fi
+        fi
+    ) &
 }
 
 # Function to parse results from CertStream
@@ -331,6 +378,11 @@ parse_results() {
                 if [[ ${nuclei_scan} == true ]]; then
                     scan_with_nuclei "$host"
                 fi
+                
+                # Run URL discovery and exposure scan if enabled
+                if [[ ${url_exposure_scan} == true ]]; then
+                    scan_with_url_exposure "$host"
+                fi
             fi
             # If it still doesn't resolve, skip (already in unresolved file)
             continue
@@ -373,6 +425,11 @@ parse_results() {
             # Run nuclei scan if enabled
             if [[ ${nuclei_scan} == true ]]; then
                 scan_with_nuclei "$host"
+            fi
+            
+            # Run URL discovery and exposure scan if enabled
+            if [[ ${url_exposure_scan} == true ]]; then
+                scan_with_url_exposure "$host"
             fi
         else
             # New domain that doesn't resolve - add to unresolved file
@@ -481,12 +538,14 @@ function initiate(){
 	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun parameter discovery is enabled for resolved domains"
 	[[ ${silent} == false && "$dirsearch_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Dirsearch directory scanning is enabled for resolved domains"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei scanning is enabled for resolved domains"
+	[[ ${silent} == false && "$url_exposure_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} URL discovery and exposure scanning is enabled for resolved domains"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Unresolved domains: $output_file"
 	[[ ${silent} == false ]] && echo -e "${BLUE}[INFO]${NC} Resolved domains: $resolved_file"
 	[[ ${silent} == false && "$naabu_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Naabu results: naabu_results/ directory"
 	[[ ${silent} == false && "$arjun_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Arjun results: arjun_results/ directory"
 	[[ ${silent} == false && "$dirsearch_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Dirsearch results: dirsearch_results/ directory"
 	[[ ${silent} == false && "$nuclei_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} Nuclei results: nuclei_results/ directory"
+	[[ ${silent} == false && "$url_exposure_scan" == true ]] && echo -e "${BLUE}[INFO]${NC} URL exposure results: gau_results/, katana_results/, all-expo-{domain}.txt files"
 	
 	# Start CertStream with auto-reconnection
 	start_certstream
@@ -514,6 +573,7 @@ print_usage() {
 	echo -e "  -r, --arjun           Enable parameter discovery with arjun"
 	echo -e "  -f, --dirsearch       Enable directory/file scanning with dirsearch"
 	echo -e "  -u, --nuclei          Enable vulnerability scanning with nuclei"
+	echo -e "  -e, --url-exposure    Enable URL discovery and exposure scanning"
 	echo
 	
 	echo -e "${GREEN}COMMON EXAMPLES:${NC}"
@@ -527,10 +587,10 @@ print_usage() {
 	echo -e "  $0 -s -n -t targets.txt"
 	echo
 	echo -e "  ${BLUE}# Full security scanning${NC}"
-	echo -e "  $0 -p -r -f -u -t targets.txt"
+	echo -e "  $0 -p -r -f -u -e -t targets.txt"
 	echo
 	echo -e "  ${BLUE}# Everything enabled${NC}"
-	echo -e "  $0 -s -n -p -r -f -u -t targets.txt"
+	echo -e "  $0 -s -n -p -r -f -u -e -t targets.txt"
 	echo
 	
 	echo -e "${GREEN}SCANNING WORKFLOW:${NC}"
@@ -539,6 +599,7 @@ print_usage() {
 	echo -e "  3. ${YELLOW}Arjun${NC} - Parameter discovery (-r flag)"
 	echo -e "  4. ${YELLOW}Dirsearch${NC} - Directory/file scanning (-f flag)"
 	echo -e "  5. ${YELLOW}Nuclei${NC} - Vulnerability scanning (-u flag)"
+	echo -e "  6. ${YELLOW}URL Exposure${NC} - URL discovery + exposure scanning (-e flag)"
 	echo
 	
 	echo -e "${GREEN}OUTPUT FILES:${NC}"
@@ -548,6 +609,9 @@ print_usage() {
 	echo -e "  arjun_results/           - Parameter discovery results"
 	echo -e "  dirsearch_results/       - Directory/file scan results"
 	echo -e "  nuclei_results/          - Vulnerability scan results"
+	echo -e "  gau_results/             - GAU URL discovery results"
+	echo -e "  katana_results/          - Katana URL crawling results"
+	echo -e "  all-expo-{domain}.txt    - Combined URLs for exposure scanning"
 	echo
 }
 
@@ -582,6 +646,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -u|--nuclei)
       nuclei_scan=true
+      shift
+      ;;
+    -e|--url-exposure)
+      url_exposure_scan=true
       shift
       ;;
     -t|--target)
