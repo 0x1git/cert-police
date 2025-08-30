@@ -598,6 +598,9 @@ swagger.json
 swagger/swagger-ui.html
 swagger-ui 
 swagger-ui.html
+users/api/swagger/v1/swagger.json
+api/swagger/v1/swagger.json
+
 .swp
 Sysindex.config
 System.config
